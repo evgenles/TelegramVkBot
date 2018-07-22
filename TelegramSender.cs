@@ -4,31 +4,38 @@ using System.Linq;
 using System.Threading.Tasks;
 using Telegram.Bot;
 using Telegram.Bot.Types.Enums;
-using Citrina;
 using Newtonsoft.Json;
 using Telegram.Bot.Types.ReplyMarkups;
 using VkLibrary.Core;
 using VkLibrary.Core.LongPolling;
+using VkNet.Model.Attachments;
+using VkNet;
 using Telegram.Bot.Types;
+using System.Drawing;
+using System.Net.Http;
+using System.Text;
+using System.Net.Http.Headers;
+using System.IO;
+using NLog;
 
 namespace TelegramVkBot
 {
     public class TelegramSender : IDisposable
     {
-        private readonly string _telegramToken;
-        private readonly string _vkToken;
         private readonly string _userId;
 
         private readonly TelegramBotClient _telegram;
         private readonly Vkontakte _vk;
         private readonly LongPollClient _vkPool;
-
         private DateTime endOfDialog = new DateTime();
-        private int idReceiver;
+        private long idReceiver;
+
+        private readonly VkNet.VkApi _vkNet = new VkApi(_logger);
+        private readonly HttpClient _httpClient = new HttpClient();
+        private static ILogger _logger = LogManager.GetCurrentClassLogger();
         public TelegramSender(string telegramToken, string vkToken, string userId)
         {
-            _telegramToken = telegramToken;
-            _vkToken = vkToken;
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
             _userId = userId;
             _telegram = new TelegramBotClient(telegramToken);
             _telegram.OnMessage += _telegram_OnMessage;
@@ -46,6 +53,9 @@ namespace TelegramVkBot
             var poolServer = _vk.Messages.GetLongPollServer().GetAwaiter().GetResult();
             _vkPool = _vk.StartLongPollClient(poolServer.Server, poolServer.Key, poolServer.Ts).GetAwaiter().GetResult();
             _vkPool.AddMessageEvent += _vkPool_AddMessageEvent;
+
+
+            _vkNet.Authorize(new VkNet.Model.ApiAuthParams { AccessToken = vkToken });
         }
 
         private async void _vkPool_AddMessageEvent(object sender, Tuple<int, MessageFlags, Newtonsoft.Json.Linq.JArray> e)
@@ -53,11 +63,30 @@ namespace TelegramVkBot
             var messageId = e.Item1;
             var flag = e.Item2;
             var fields = e.Item3;
-            if (flag == MessageFlags.Unread)
+            if (flag != MessageFlags.Outbox && flag != MessageFlags.Deleted)
             {
-                var senderMsg = (await _vk.Users.Get(userIds: new List<string> {fields[3].ToString() })).First();
+                var senderMsg = (await _vkNet.Users.GetAsync(userIds: new List<long> { long.Parse(fields[3].ToString()) })).First();
+                
                 await _telegram.SendTextMessageAsync(_userId, $"{senderMsg.FirstName} {senderMsg.LastName} (/{senderMsg.Id}) : {Environment.NewLine}" +
-                    $" {  fields[6].ToString()}");
+                                    $" {  fields[6].ToString()}");
+                var attachments = fields[7]?.First();
+                if (attachments != null)
+                {
+                    var msgAttachments = _vkNet.Messages.GetById(new List<ulong>() { (ulong)messageId }).First().Attachments;
+    
+                    foreach(var attach in msgAttachments)
+                    {
+                        switch (attach.Type.Name)
+                        {
+                            case "Photo":
+                                await _telegram.SendPhotoAsync(_userId, 
+                                    new Telegram.Bot.Types.InputFiles.InputOnlineFile(
+                                        await _httpClient.GetStreamAsync((attach.Instance as Photo).Sizes.Last().Url)));
+                                break;
+                        }
+
+                    }
+                }
             }
         }
 
@@ -85,16 +114,20 @@ namespace TelegramVkBot
                 var splittedMessage = message.Text.Split();
                 if (endOfDialog > DateTime.Now && splittedMessage.First().First() != '/')
                 {
-                    await _vk.Messages.Send(idReceiver, message: message.Text);
+                    await _vkNet.Messages.SendAsync(new VkNet.Model.RequestParams.MessagesSendParams
+                    {
+                        UserId = idReceiver,
+                        Message = message.Text
+                    });
                     endOfDialog = DateTime.Now.AddMinutes(10);
                 }
                 else if (splittedMessage.First().First() == '/')
                 {
-                    if (Int32.TryParse(splittedMessage.First().Substring(1), out idReceiver))
+                    if (long.TryParse(splittedMessage.First().Substring(1), out idReceiver))
                     {
                         endOfDialog = DateTime.Now.AddMinutes(10);
-                        var userOnlineRequest = await _vk.Users.Get(userIds: new List<string> { idReceiver.ToString() });
-                       
+                        var userOnlineRequest = await _vkNet.Users.GetAsync(new List<long> { idReceiver });
+
                         await _telegram.SendTextMessageAsync(message.Chat.Id, $"User selected for dialog: {userOnlineRequest.First().FirstName} " +
                             $"{userOnlineRequest.First().LastName} (/{idReceiver})");
                     }
@@ -103,12 +136,21 @@ namespace TelegramVkBot
                         await MenuAsync(splittedMessage.First(), message.Chat.Id);
                     }
                 }
-                else
-                {
-                    await _telegram.SendTextMessageAsync(message.Chat.Id, "Please select user to start dialog");
-                }
 
-                //await _telegram.SendTextMessageAsync(message.Chat.Id, "Sended");
+            }
+            else if (endOfDialog > DateTime.Now)
+            {
+                if (message?.Type == MessageType.Photo)
+                {
+                    var photo = message.Photo.Last();
+                    await TelegramToVkPhoto(photo);
+                }
+            }
+
+
+            if (endOfDialog <= DateTime.Now)
+            {
+                await _telegram.SendTextMessageAsync(message.Chat.Id, "Please select user to start dialog");
             }
         }
 
@@ -128,31 +170,61 @@ namespace TelegramVkBot
                         }));
                     break;
                 case "/friendson":
-                    var usersOnlineIdRequest = await _vk.Friends.GetOnline();
-                    //if (usersOnlineIdRequest.IsError)
-                    //{
-                    //    await _telegram.SendTextMessageAsync(chatId, $"Error while getting usersId: {usersOnlineIdRequest.Error.Message}");
-                    //}
-                    //else
-                    //{
-                    var userOnlineRequest = await _vk.Users.Get(userIds: usersOnlineIdRequest.Select(id => id.ToString()));
-                    //if (userOnlineRequest.IsError)
-                    //{
-                    //    await _telegram.SendTextMessageAsync(chatId, $"Error while getting users: {userOnlineRequest.Error.Message}");
-                    //}
-                    //else
-                    //{
+                    var usersOnlineIdRequest = await _vkNet.Friends.GetOnlineAsync(new VkNet.Model.RequestParams.FriendsGetOnlineParams());
+                    var userOnlineRequest = await _vkNet.Users.GetAsync(usersOnlineIdRequest.Online);
                     var usersOnlineMsgs = "Friends online list: " + Environment.NewLine +
                         string.Join(Environment.NewLine, userOnlineRequest.Select(user => $"{user.FirstName} {user.LastName}  (/{user.Id})"));
                     await _telegram.SendTextMessageAsync(chatId, usersOnlineMsgs);
-                    //}
-                    // }
                     break;
+            }
+        }
+
+        private async Task<long> TelegramToVkPhoto(PhotoSize photo)
+        {
+            try
+            {
+                var uplUrl = await _vkNet.Photo.GetMessagesUploadServerAsync(0);
+
+                var file = await _telegram.GetFileAsync(photo.FileId);
+                var fileStream = await _telegram.DownloadFileAsync(file.FilePath) as MemoryStream;
+
+                var requestContent = new MultipartFormDataContent();
+                var imageContent = new ByteArrayContent(fileStream.ToArray());
+                imageContent.Headers.ContentType = MediaTypeHeaderValue.Parse("image/jpeg");
+                requestContent.Add(imageContent, "photo", "image.jpg");
+                var uploadResponse = await _httpClient.PostAsync(uplUrl.UploadUrl, requestContent);
+
+                var uploadRezult = await _vkNet.Photo.SaveMessagesPhotoAsync(await uploadResponse.Content.ReadAsStringAsync());
+                return await _vkNet.Messages.SendAsync(new VkNet.Model.RequestParams.MessagesSendParams
+                {
+                    UserId = idReceiver,
+                    Attachments = uploadRezult
+                });
+            }
+            catch (Exception e)
+            {
+                System.Diagnostics.Debug.WriteLine(e.ToString());
+                throw;
             }
         }
         public void Dispose()
         {
+            Dispose(true);
+            GC.SuppressFinalize(this);
+        }
+
+        protected virtual void Dispose(bool disposing)
+        {
             _telegram.StopReceiving();
+            _vkPool.Stop();
+            _vk.Dispose();
+            _vkNet.Dispose();
+            _httpClient.Dispose();
+        }
+
+        ~TelegramSender()
+        {
+            Dispose(false);
         }
     }
 }

@@ -2,3 +2,4 @@ bin
 obj
 wwwroot
 .vs
+Properties/PublishProfiles
