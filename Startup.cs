@@ -36,7 +36,7 @@ namespace TelegramVkBot
                 app.UseDeveloperExceptionPage();
             }
 
-            app.UseMvc();
+            app.UseMvc(opt=>opt.MapRoute("default", "{Controller=Home}/{Action=Index}"));
         }
     }
 }

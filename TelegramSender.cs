@@ -17,6 +17,8 @@ using System.Text;
 using System.Net.Http.Headers;
 using System.IO;
 using NLog;
+using VkNet.Enums.Filters;
+using VkNet.Enums.SafetyEnums;
 
 namespace TelegramVkBot
 {
@@ -50,11 +52,12 @@ namespace TelegramVkBot
                     ExpiresIn = 0
                 }
             };
-            var poolServer = _vk.Messages.GetLongPollServer().GetAwaiter().GetResult();
-            _vkPool = _vk.StartLongPollClient(poolServer.Server, poolServer.Key, poolServer.Ts).GetAwaiter().GetResult();
+            _vkNet.Authorize(new VkNet.Model.ApiAuthParams { AccessToken = vkToken });
+
+            var poolServer = _vkNet.Messages.GetLongPollServer();
+            _vkPool = _vk.StartLongPollClient(poolServer.Server, poolServer.Key, (int)poolServer.Ts).GetAwaiter().GetResult();
             _vkPool.AddMessageEvent += _vkPool_AddMessageEvent;
 
-            _vkNet.Authorize(new VkNet.Model.ApiAuthParams { AccessToken = vkToken });
         }
 
         private async void _vkPool_AddMessageEvent(object sender, Tuple<int, MessageFlags, Newtonsoft.Json.Linq.JArray> e)
@@ -65,20 +68,20 @@ namespace TelegramVkBot
             if (flag != MessageFlags.Outbox && flag != MessageFlags.Deleted)
             {
                 var senderMsg = (await _vkNet.Users.GetAsync(userIds: new List<long> { long.Parse(fields[3].ToString()) })).First();
-                
+
                 await _telegram.SendTextMessageAsync(_userId, $"{senderMsg.FirstName} {senderMsg.LastName} (/{senderMsg.Id}) : {Environment.NewLine}" +
                                     $" {  fields[6].ToString()}");
                 var attachments = fields[7]?.First();
                 if (attachments != null)
                 {
                     var msgAttachments = _vkNet.Messages.GetById(new List<ulong>() { (ulong)messageId }).First().Attachments;
-    
-                    foreach(var attach in msgAttachments)
+
+                    foreach (var attach in msgAttachments)
                     {
                         switch (attach.Type.Name)
                         {
                             case "Photo":
-                                await _telegram.SendPhotoAsync(_userId, 
+                                await _telegram.SendPhotoAsync(_userId,
                                     new Telegram.Bot.Types.InputFiles.InputOnlineFile(
                                         await _httpClient.GetStreamAsync((attach.Instance as Photo).Sizes.Last().Url)));
                                 break;
@@ -161,14 +164,13 @@ namespace TelegramVkBot
                     await _telegram.SendTextMessageAsync(chatId, $"You id: {chatId}");
                     break;
                 case "/start":
-                    await _telegram.SendTextMessageAsync(chatId, "Select command", replyMarkup: new InlineKeyboardMarkup(new[]
+                    await _telegram.SendTextMessageAsync(chatId, "Select command", replyMarkup: new ReplyKeyboardMarkup(new List<List<KeyboardButton>>
                     {
-                            new[]
+                            new List<KeyboardButton>
                             {
-                                InlineKeyboardButton.WithCallbackData("FriendsOn", "/friendson"),
-                                InlineKeyboardButton.WithCallbackData("All Friends", "/allfriends"),
-                                InlineKeyboardButton.WithCallbackData("LastDialogs", "/lastdialogs")
-                            }
+                                "/friendson", "/friends", "/history"
+                            },
+
                         }));
                     break;
                 case "/friendson":
@@ -177,6 +179,20 @@ namespace TelegramVkBot
                     var usersOnlineMsgs = "Friends online list: " + Environment.NewLine +
                         string.Join(Environment.NewLine, userOnlineRequest.Select(user => $"{user.FirstName} {user.LastName}  (/{user.Id})"));
                     await _telegram.SendTextMessageAsync(chatId, usersOnlineMsgs);
+                    break;
+                case "/friends":
+                    var friends = await _vkNet.Friends.GetAsync(new VkNet.Model.RequestParams.FriendsGetParams()
+                    {
+                        Count = 50,
+                        Fields = ProfileFields.FirstName | ProfileFields.LastName | ProfileFields.LastSeen | ProfileFields.Online | ProfileFields.Sex,
+                        Order = FriendsOrder.Hints,
+                    });
+                    //TODO: Проверить last seen на время
+
+
+                    var frindsMsg = "Frinds: " + Environment.NewLine +
+                        string.Join(Environment.NewLine, friends.Select(fr => $"{fr.FirstName} {fr.LastName} - /{fr.Id} -  {(fr.Online.Value ? "Онлайн" : $"Был{(fr.Sex==VkNet.Enums.Sex.Female?"а":"")} онлайн {fr.LastSeen?.Time?.ToString("dd.MM.yyyy HH-mm-ss")}")}"));
+                    await _telegram.SendTextMessageAsync(chatId, frindsMsg);
                     break;
             }
         }
