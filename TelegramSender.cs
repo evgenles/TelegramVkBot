@@ -54,7 +54,6 @@ namespace TelegramVkBot
             _vkPool = _vk.StartLongPollClient(poolServer.Server, poolServer.Key, poolServer.Ts).GetAwaiter().GetResult();
             _vkPool.AddMessageEvent += _vkPool_AddMessageEvent;
 
-
             _vkNet.Authorize(new VkNet.Model.ApiAuthParams { AccessToken = vkToken });
         }
 
@@ -103,7 +102,7 @@ namespace TelegramVkBot
         private async void _telegram_OnMessage(object sender, Telegram.Bot.Args.MessageEventArgs messageEventArgs)
         {
             var message = messageEventArgs.Message;
-            if (_userId != message.Chat.Id.ToString())
+            if (_userId != message.Chat.Id.ToString() && message?.Text != "/gettelegramid")
             {
                 await _telegram.SendTextMessageAsync(message.Chat.Id, "Unauthorized user");
                 return;
@@ -158,6 +157,9 @@ namespace TelegramVkBot
         {
             switch (query)
             {
+                case "/gettelegramid":
+                    await _telegram.SendTextMessageAsync(chatId, $"You id: {chatId}");
+                    break;
                 case "/start":
                     await _telegram.SendTextMessageAsync(chatId, "Select command", replyMarkup: new InlineKeyboardMarkup(new[]
                     {
