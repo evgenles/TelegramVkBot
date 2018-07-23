@@ -152,7 +152,7 @@ namespace TelegramVkBot
 
             if (endOfDialog <= DateTime.Now)
             {
-                await _telegram.SendTextMessageAsync(message.Chat.Id, "Please select user to start dialog");
+                await _telegram.SendTextMessageAsync(message.Chat.Id, "Выберите пользователя чтобы начать диалог");
             }
         }
 
@@ -161,22 +161,21 @@ namespace TelegramVkBot
             switch (query)
             {
                 case "/gettelegramid":
-                    await _telegram.SendTextMessageAsync(chatId, $"You id: {chatId}");
+                    await _telegram.SendTextMessageAsync(chatId, $"Ваш id: {chatId}");
                     break;
                 case "/start":
-                    await _telegram.SendTextMessageAsync(chatId, "Select command", replyMarkup: new ReplyKeyboardMarkup(new List<List<KeyboardButton>>
+                    await _telegram.SendTextMessageAsync(chatId, "Выберите комманду", replyMarkup: new ReplyKeyboardMarkup(new List<List<KeyboardButton>>
                     {
                             new List<KeyboardButton>
                             {
-                                "/friendson", "/friends", "/history"
-                            },
-
-                        }));
+                                "/friendson", "/friends", "/lastdialogs"
+                            }
+                        },true));
                     break;
                 case "/friendson":
                     var usersOnlineIdRequest = await _vkNet.Friends.GetOnlineAsync(new VkNet.Model.RequestParams.FriendsGetOnlineParams());
                     var userOnlineRequest = await _vkNet.Users.GetAsync(usersOnlineIdRequest.Online);
-                    var usersOnlineMsgs = "Friends online list: " + Environment.NewLine +
+                    var usersOnlineMsgs = "Друзья онлайн: " + Environment.NewLine +
                         string.Join(Environment.NewLine, userOnlineRequest.Select(user => $"{user.FirstName} {user.LastName}  (/{user.Id})"));
                     await _telegram.SendTextMessageAsync(chatId, usersOnlineMsgs);
                     break;
@@ -190,13 +189,28 @@ namespace TelegramVkBot
                     //TODO: Проверить last seen на время
 
 
-                    var frindsMsg = "Frinds: " + Environment.NewLine +
-                        string.Join(Environment.NewLine, friends.Select(fr => $"{fr.FirstName} {fr.LastName} - /{fr.Id} -  {(fr.Online.Value ? "Онлайн" : $"Был{(fr.Sex==VkNet.Enums.Sex.Female?"а":"")} онлайн {fr.LastSeen?.Time?.ToString("dd.MM.yyyy HH-mm-ss")}")}"));
+                    var frindsMsg = "Друзья: " + Environment.NewLine +
+                        string.Join(Environment.NewLine, friends.Select(fr => UserStr(fr) ));
                     await _telegram.SendTextMessageAsync(chatId, frindsMsg);
+                    break;
+                case "/lastdialogs":
+                    var dialogs = await _vkNet.Messages.GetDialogsAsync(new VkNet.Model.RequestParams.MessagesDialogsGetParams
+                    {
+                        Count = 20
+                    });
+
+                    var users = await _vkNet.Users.GetAsync(dialogs.Messages.Select(x => x.UserId.Value), ProfileFields.FirstName | ProfileFields.LastName | ProfileFields.Online | ProfileFields.LastSeen |ProfileFields.Sex);
+                    var dialogsMsg = "Последние диалоги: " + Environment.NewLine +
+                        string.Join(Environment.NewLine, dialogs.Messages
+                            .Join(users, msg => msg.UserId, usr => usr.Id, (msg, usr) => new { Message = msg, User = usr })
+                            .Select(msg => $"Пользователь  {UserStr(msg.User)}  {Environment.NewLine} последнее сообщение {(msg.Message.Out.HasValue && msg.Message.Out.Value ? "отправлено" : "получено")} {msg.Message.Date?.ToString("dd.MM.yyyy HH-mm-ss")}"));
+                    await _telegram.SendTextMessageAsync(chatId, dialogsMsg);
                     break;
             }
         }
 
+        private string UserStr(VkNet.Model.User fr) =>
+            $"{fr.FirstName} {fr.LastName} - /{fr.Id} -  {(fr.Online.Value ? "Онлайн" : $"Был{(fr.Sex == VkNet.Enums.Sex.Female ? "а" : "")} онлайн {fr.LastSeen?.Time?.ToString("dd.MM.yyyy HH-mm-ss")}")}";
         private async Task<long> TelegramToVkPhoto(PhotoSize photo)
         {
             try
