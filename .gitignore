@@ -2,4 +2,5 @@ bin
 obj
 wwwroot
 .vs
+.vscode
 Properties/PublishProfiles
